@@ -1,9 +1,7 @@
-// next.config.js
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    reactStrictMode: true,
+    transpilePackages: ['@arcgis/core'],
     webpack: (config) => {
-      // This is necessary to handle the ArcGIS dependencies
       config.module.rules.push({
         test: /\.js$/,
         include: /node_modules(\/|\\)@arcgis(\/|\\)core/,
