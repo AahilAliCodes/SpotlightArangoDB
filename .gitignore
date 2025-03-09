@@ -1,0 +1,10 @@
+node_modules/
+.next/
+# Node modules
+node_modules/
+
+# Prisma
+**/node_modules/@prisma/
+**/node_modules/.prisma/
+**/node_modules/prisma/
+*.dylib.node
