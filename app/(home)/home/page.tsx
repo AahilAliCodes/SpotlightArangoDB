@@ -1,13 +1,10 @@
 'use client';
 import Link from 'next/link';
-
 import { useRouter } from 'next/navigation';
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { UserButton, SignOutButton } from "@clerk/nextjs";
 import Earth3D from '@/components/Earth3D';
 import axios from 'axios';
-
 
 export default function HomePage() {
   const router = useRouter();
@@ -17,6 +14,10 @@ export default function HomePage() {
   const [visibleEventCount, setVisibleEventCount] = useState(10);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [isNaturalLanguageQuery, setIsNaturalLanguageQuery] = useState(false);
+  const [queryInProgress, setQueryInProgress] = useState(false);
+  const [queryResult, setQueryResult] = useState(null);
+  const [usingFallback, setUsingFallback] = useState(false);
   
   // Filter states
   const [eventTypeFilters, setEventTypeFilters] = useState({
@@ -35,6 +36,205 @@ export default function HomePage() {
   const [isFilterApplied, setIsFilterApplied] = useState(false);
   
   const updatesContainerRef = useRef(null);
+
+  // Process natural language query
+  const processNaturalLanguageQuery = async () => {
+    if (!textFilter.trim()) return;
+    
+    try {
+      setQueryInProgress(true);
+      setIsNaturalLanguageQuery(true);
+      
+      const response = await axios.post('/api/natural-language-query', {
+        query: textFilter
+      });
+      
+      setQueryResult(response.data);
+      
+      // Check if we're using the fallback system
+      if (response.data.usingFallback) {
+        setUsingFallback(true);
+      } else {
+        setUsingFallback(false);
+      }
+      
+      // If there are results, apply them to the filtered events
+      if (response.data.aqlResult && Array.isArray(response.data.aqlResult)) {
+        setFilteredEventData(response.data.aqlResult);
+        setIsFilterApplied(true);
+      } else if (response.data.answer) {
+        // Handle case where there's an answer but no direct results to display
+        console.log("Natural language query answer:", response.data.answer);
+      }
+      
+    } catch (error) {
+      console.error('Error processing natural language query:', error);
+      // Handle error by doing client-side processing
+      handleClientSideProcessing();
+    } finally {
+      setQueryInProgress(false);
+    }
+  };
+  
+  // Client-side fallback for processing queries
+  const handleClientSideProcessing = () => {
+    // Local implementation of the query processing
+    const normalizedQuery = textFilter.toLowerCase().trim();
+    
+    // Extract country code
+    let countryFilter = null;
+    if (normalizedQuery.includes(' in us') || normalizedQuery.includes(' in the us') || 
+        normalizedQuery.includes(' in united states') || normalizedQuery.includes(' in the united states')) {
+      countryFilter = 'US';
+    } else if (normalizedQuery.includes(' in uk') || normalizedQuery.includes(' in the uk') || 
+              normalizedQuery.includes(' in united kingdom') || normalizedQuery.includes(' in the united kingdom')) {
+      countryFilter = 'GB';
+    } else if (normalizedQuery.includes(' in canada') || normalizedQuery.includes(' in the canada')) {
+      countryFilter = 'CA';
+    }
+    
+    // Extract event types
+    const eventTypeFilters = {
+      cooperation: normalizedQuery.includes('cooperation'),
+      conflict: normalizedQuery.includes('conflict'),
+      verbal: normalizedQuery.includes('verbal'),
+      material: normalizedQuery.includes('material')
+    };
+    
+    // Extract Goldstein score filtering
+    let goldsteinMin = -10;
+    let goldsteinMax = 10;
+    
+    if (normalizedQuery.includes('above') || normalizedQuery.includes('greater than')) {
+      const scoreMatch = normalizedQuery.match(/(above|greater than|>)\s+(\d+)/);
+      if (scoreMatch && scoreMatch[2]) {
+        goldsteinMin = parseInt(scoreMatch[2]);
+      }
+    }
+    
+    if (normalizedQuery.includes('below') || normalizedQuery.includes('less than')) {
+      const scoreMatch = normalizedQuery.match(/(below|less than|<)\s+(\d+)/);
+      if (scoreMatch && scoreMatch[2]) {
+        goldsteinMax = parseInt(scoreMatch[2]);
+      }
+    }
+    
+    // Apply filters
+    let filtered = [...eventData];
+    
+    // Apply country filter
+    if (countryFilter) {
+      filtered = filtered.filter(event => event.countryCode === countryFilter);
+    }
+    
+    // Apply event type filters
+    if (eventTypeFilters.cooperation && !eventTypeFilters.conflict) {
+      filtered = filtered.filter(event => event.quadclass === 1 || event.quadclass === 2);
+      
+      if (eventTypeFilters.verbal) {
+        filtered = filtered.filter(event => event.quadclass === 1);
+      } else if (eventTypeFilters.material) {
+        filtered = filtered.filter(event => event.quadclass === 2);
+      }
+    } else if (eventTypeFilters.conflict && !eventTypeFilters.cooperation) {
+      filtered = filtered.filter(event => event.quadclass === 3 || event.quadclass === 4);
+      
+      if (eventTypeFilters.verbal) {
+        filtered = filtered.filter(event => event.quadclass === 3);
+      } else if (eventTypeFilters.material) {
+        filtered = filtered.filter(event => event.quadclass === 4);
+      }
+    } else if (eventTypeFilters.verbal) {
+      filtered = filtered.filter(event => event.quadclass === 1 || event.quadclass === 3);
+    } else if (eventTypeFilters.material) {
+      filtered = filtered.filter(event => event.quadclass === 2 || event.quadclass === 4);
+    }
+    
+    // Apply Goldstein score filters
+    filtered = filtered.filter(event => 
+      event.goldsteinscore >= goldsteinMin && 
+      event.goldsteinscore <= goldsteinMax
+    );
+    
+    // Generate response message
+    let responseMessage = "";
+    
+    if (filtered.length === 0) {
+      responseMessage = "I couldn't find any events matching your criteria.";
+    } else if (filtered.length === eventData.length) {
+      responseMessage = "Showing all events. You can be more specific with your query to filter the results.";
+    } else {
+      // Country-specific response
+      if (countryFilter) {
+        responseMessage = `Found ${filtered.length} events in ${countryFilter === 'US' ? 'the United States' : countryFilter === 'GB' ? 'the United Kingdom' : countryFilter}.`;
+      } else {
+        responseMessage = `Found ${filtered.length} events matching your criteria.`;
+      }
+      
+      // Add event type info
+      if (eventTypeFilters.cooperation && !eventTypeFilters.conflict) {
+        responseMessage += ` These are cooperation events`;
+        if (eventTypeFilters.verbal) responseMessage += ` of the verbal type.`;
+        else if (eventTypeFilters.material) responseMessage += ` of the material type.`;
+        else responseMessage += `.`;
+      } else if (eventTypeFilters.conflict && !eventTypeFilters.cooperation) {
+        responseMessage += ` These are conflict events`;
+        if (eventTypeFilters.verbal) responseMessage += ` of the verbal type.`;
+        else if (eventTypeFilters.material) responseMessage += ` of the material type.`;
+        else responseMessage += `.`;
+      }
+      
+      // Add Goldstein info
+      if (goldsteinMin > -10 || goldsteinMax < 10) {
+        responseMessage += ` Goldstein scores are between ${goldsteinMin} and ${goldsteinMax}.`;
+      }
+    }
+    
+    // Update state
+    setFilteredEventData(filtered);
+    setIsFilterApplied(true);
+    setUsingFallback(true);
+    setQueryResult({
+      answer: responseMessage,
+      aqlResult: filtered
+    });
+  };
+  
+  // Detect if input is likely a natural language query
+  const isLikelyNaturalLanguageQuery = (text) => {
+    if (!text) return false;
+    
+    // Always treat text with a question mark as a natural language query
+    if (text.includes('?')) {
+      return true;
+    }
+    
+    // Check if text contains question words or phrases
+    const questionPatterns = [
+      /^(what|where|when|which|who|whose|whom|why|how)/i,
+      /^(show|find|get|give|list|display|tell)/i,
+      /^(is|are|can|could|do|does|did|has|have|should|would|will)/i,
+      /(show me|tell me|can you|could you|would you|find|list|get|give)/i
+    ];
+    
+    return questionPatterns.some(pattern => pattern.test(text.trim()));
+  };
+
+  // Handle text filter change
+  const handleTextFilterChange = (e) => {
+    const newValue = e.target.value;
+    setTextFilter(newValue);
+    
+    // Check if the input looks like a natural language query
+    setIsNaturalLanguageQuery(isLikelyNaturalLanguageQuery(newValue));
+  };
+
+  // Handle key press in text filter input
+  const handleTextFilterKeyPress = (e) => {
+    if (e.key === 'Enter' && isNaturalLanguageQuery) {
+      processNaturalLanguageQuery();
+    }
+  };
   
   // Fetch event data from webhook
   useEffect(() => {
@@ -96,24 +296,6 @@ export default function HomePage() {
     'Material Conflict': 4
   };
   
-  // Sample event structure:
-  // {
-  //   "source": "https://thehill.com/homenews/state-watch/5184314-bipartisan-california-lawmakers-congress-los-angeles-wildfire-aid/",
-  //   "goldsteinscore": 7,
-  //   "quadclass": 2,
-  //   "fullname": "Los Angeles County, California, United States",
-  //   "countryCode": "US",
-  //   "actorCountryCode": null,
-  //   "actorFilter": null,
-  //   "coordinates": [34.3667, -118.201]
-  // }
-  //
-  // Note: Data comes from different sources but is normalized to this format:
-  // - fullname = location.fullname
-  // - countryCode = location.countryCode 
-  // - actorCountryCode = actor.countryCode
-  // - actorFilter = actor.type3Code
-  
   // Function to send filters to backend
   const sendFiltersToBackend = async (filters) => {
     try {
@@ -128,6 +310,12 @@ export default function HomePage() {
   // Apply filters when user clicks the Apply button
   const applyFilters = async () => {
     if (!eventData.length) return;
+    
+    // If it's a natural language query, process it differently
+    if (isNaturalLanguageQuery) {
+      processNaturalLanguageQuery();
+      return;
+    }
     
     setLoading(true);
     
@@ -292,6 +480,9 @@ export default function HomePage() {
     setGoldsteinMax(10);
     setSelectedActorFilter('');
     setTextFilter('');
+    setIsNaturalLanguageQuery(false);
+    setQueryResult(null);
+    setUsingFallback(false);
     
     if (isFilterApplied) {
       setFilteredEventData(eventData);
@@ -390,7 +581,7 @@ export default function HomePage() {
         <div className="mt-8">
           <h2 className="text-3xl font-bold mb-6">Event Filters</h2>
           
-          {/* Single Filter Card replacing the three previous cards */}
+          {/* Filter Card */}
           <div className="bg-gray-800 p-6 rounded-lg mb-8">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">Filter Events</h3>
@@ -498,19 +689,76 @@ export default function HomePage() {
                 </div>
               </div>
               
-              {/* Text Search Input */}
+              {/* Text Search Input with Natural Language Query Support */}
               <div className="col-span-4">
-                <label htmlFor="text-filter" className="block font-semibold mb-2">
-                  Search Text
+                <label htmlFor="text-filter" className="flex items-center font-semibold mb-2">
+                  {isNaturalLanguageQuery ? 'Natural Language Query' : 'Search or Ask a Question'}
+                  <span className="ml-2 text-xs bg-indigo-600 px-2 py-0.5 rounded-full">
+                    AI Powered
+                  </span>
+                  {usingFallback && (
+                    <span className="ml-2 text-xs bg-orange-600 px-2 py-0.5 rounded-full">
+                      Langchain
+                    </span>
+                  )}
                 </label>
-                <input
-                  id="text-filter"
-                  type="text"
-                  value={textFilter}
-                  onChange={(e) => setTextFilter(e.target.value)}
-                  placeholder="Search locations, sources, actor types..."
-                  className="w-full px-4 py-2 bg-gray-700 rounded-lg text-white border border-gray-600 focus:border-emerald-500 focus:outline-none"
-                />
+                <div className="relative">
+                  <input
+                    id="text-filter"
+                    type="text"
+                    value={textFilter}
+                    onChange={handleTextFilterChange}
+                    onKeyPress={handleTextFilterKeyPress}
+                    placeholder="Ask questions like 'Which countries had verbal conflicts?' or 'Show events with scores > 5'"
+                    className={`w-full px-4 py-2 rounded-lg text-white border focus:outline-none ${
+                      isNaturalLanguageQuery 
+                        ? 'bg-indigo-900 border-indigo-600 focus:border-indigo-400' 
+                        : 'bg-gray-700 border-gray-600 focus:border-emerald-500'
+                    }`}
+                  />
+                  {isNaturalLanguageQuery && (
+                    <div className="absolute right-3 top-2">
+                      <span className="bg-indigo-700 text-xs px-2 py-1 rounded-full">
+                        Question Mode
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-1 text-sm flex justify-between">
+                  <p className={isNaturalLanguageQuery ? "text-indigo-400" : "text-gray-400"}>
+                    {isNaturalLanguageQuery 
+                      ? "I'll analyze your question. Press Enter or click Search."
+                      : "Try asking a question like 'What conflicts occurred in the US?' or 'Show cooperation events'"}
+                  </p>
+                  {textFilter && !isNaturalLanguageQuery && (
+                    <button
+                      onClick={() => setIsNaturalLanguageQuery(true)}
+                      className="text-indigo-400 hover:text-indigo-300 ml-2"
+                    >
+                      Treat as question?
+                    </button>
+                  )}
+                </div>
+                
+                {/* Show query result if available */}
+                {queryResult && queryResult.answer && (
+                  <div className="mt-3 p-3 bg-indigo-800 bg-opacity-50 rounded-lg">
+                    <h4 className="font-semibold text-indigo-300">AI Response:</h4>
+                    <p className="text-white">{queryResult.answer}</p>
+                    {queryResult.aqlQuery && (
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer text-indigo-300">Show Query Details</summary>
+                        <pre className="mt-1 p-2 bg-gray-900 rounded overflow-x-auto">
+                          {queryResult.aqlQuery}
+                        </pre>
+                      </details>
+                    )}
+                    {usingFallback && (
+                      <p className="mt-2 text-xs text-orange-300">
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             
@@ -518,118 +766,134 @@ export default function HomePage() {
             <div className="flex justify-center mt-6 mb-4">
               <button
                 onClick={applyFilters}
-                className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors font-semibold"
+                disabled={queryInProgress}
+                className={`px-6 py-3 rounded-lg transition-colors font-semibold ${
+                  queryInProgress 
+                    ? 'bg-gray-600 cursor-not-allowed' 
+                    : isNaturalLanguageQuery 
+                      ? 'bg-indigo-600 hover:bg-indigo-700' 
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                Apply Filters
+                {queryInProgress ? (
+                  <span className="flex items-center">
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Analyzing Your Question...
+                  </span>
+                ) : isNaturalLanguageQuery ? 'Search' : 'Apply Filters'}
               </button>
             </div>
             
-          {/* Filter Stats */}
+            {/* Filter Stats */}
             <div className="text-sm text-gray-400 mt-4">
               Showing {filteredEventData.length} of {eventData.length} events
               {isFilterApplied && <span className="ml-2">(filters applied)</span>}
+              {usingFallback && isFilterApplied}
             </div>
           </div>
           
           {/* Infinite Scrollable Recent Updates Container */}
-<div className="bg-gray-800 p-6 rounded-lg mb-8">
-  <h2 className="text-2xl font-bold mb-4 sticky top-20 bg-gray-800 py-2 z-10">Recent Updates</h2>
-  
-  {loading ? (
-    <div className="flex justify-center items-center p-8">
-      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div>
-    </div>
-  ) : (
-    <div 
-      ref={updatesContainerRef}
-      className="max-h-[calc(100vh-300px)] overflow-y-auto pr-2 pb-4 custom-scrollbar"
-      style={{ 
-        scrollBehavior: 'smooth',
-        minHeight: '500px'
-      }}
-    >
-      <ul className="space-y-4">
-        {filteredEventData.length > 0 ? (
-          filteredEventData.slice(0, visibleEventCount).map((event, index) => (
-            <li key={index} className="p-4 bg-gray-700 rounded-lg">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-semibold">
-                    {quadClassToEventType[event.quadclass] || getEventTypeName(event.quadclass)} in {event.fullname || 'Unknown Location'}
-                  </h3>
-                  <p className="text-gray-300">
-                    Goldstein Scale: {event.goldsteinscore?.toFixed(1) || 'N/A'} | 
-                    Country: {event.countryCode || 'Unknown'}
-                    {event.actorCountryCode && ` | Actor Country: ${event.actorCountryCode}`}
-                  {event.actorFilter && (
-                    <span className="inline-block px-2 py-0.5 bg-gray-600 text-xs rounded ml-2">
-                      {event.actorFilter}
-                    </span>
-                  )}
-                  </p>
-                  {event.coordinates && (
-                    <p className="text-gray-400 text-xs">
-                      Coordinates: {event.coordinates[0]?.toFixed(4)}, {event.coordinates[1]?.toFixed(4)}
-                    </p>
-                  )}
-                  {event.source && (
-                    <a 
-                      href={event.source} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-sm text-emerald-400 hover:text-emerald-300"
-                    >
-                      Source: {formatSourceUrl(event.source)}
-                    </a>
-                  )}
-                  <div className="mt-3">
-                  <button 
-                    onClick={() => {
-                      // Store the current event in localStorage
-                      localStorage.setItem('selectedEvent', JSON.stringify(event));
-                      // Navigate to workflows page
-                      router.push(`/workflows?source=${encodeURIComponent(event.source || '')}`);
-                    }}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Generate AI Insights
-                  </button>
-                  </div>
-                </div>
-                <span className="text-sm text-gray-400">{event.time_ago}</span>
+          <div className="bg-gray-800 p-6 rounded-lg mb-8">
+            <h2 className="text-2xl font-bold mb-4 sticky top-20 bg-gray-800 py-2 z-10">Recent Updates</h2>
+            
+            {loading ? (
+              <div className="flex justify-center items-center p-8">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div>
               </div>
-            </li>
-          ))
-        ) : (
-          <li className="p-4 bg-gray-700 rounded-lg">
-            <p>No events match your filter criteria. Try adjusting the filters.</p>
-          </li>
-        )}
-        
-        {loadingMore && (
-          <li className="flex justify-center items-center p-4">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
-          </li>
-        )}
-        
-        {eventData.length === 0 && (
-          <li className="p-4 bg-gray-700 rounded-lg">
-            <p>No events found. Please check your connection to the database.</p>
-          </li>
-        )}
-        
-        {visibleEventCount >= filteredEventData.length && filteredEventData.length > 0 && (
-          <li className="p-4 text-center text-gray-400">
-            <p>All events loaded</p>
-          </li>
-        )}
-      </ul>
-    </div>
-  )}
-</div>
+            ) : (
+              <div 
+                ref={updatesContainerRef}
+                className="max-h-[calc(100vh-300px)] overflow-y-auto pr-2 pb-4 custom-scrollbar"
+                style={{ 
+                  scrollBehavior: 'smooth',
+                  minHeight: '500px'
+                }}
+              >
+                <ul className="space-y-4">
+                  {filteredEventData.length > 0 ? (
+                    filteredEventData.slice(0, visibleEventCount).map((event, index) => (
+                      <li key={index} className="p-4 bg-gray-700 rounded-lg">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h3 className="font-semibold">
+                              {quadClassToEventType[event.quadclass] || getEventTypeName(event.quadclass)} in {event.fullname || 'Unknown Location'}
+                            </h3>
+                            <p className="text-gray-300">
+                              Goldstein Scale: {event.goldsteinscore?.toFixed(1) || 'N/A'} | 
+                              Country: {event.countryCode || 'Unknown'}
+                              {event.actorCountryCode && ` | Actor Country: ${event.actorCountryCode}`}
+                            {event.actorFilter && (
+                              <span className="inline-block px-2 py-0.5 bg-gray-600 text-xs rounded ml-2">
+                                {event.actorFilter}
+                              </span>
+                            )}
+                            </p>
+                            {event.coordinates && (
+                              <p className="text-gray-400 text-xs">
+                                Coordinates: {event.coordinates[0]?.toFixed(4)}, {event.coordinates[1]?.toFixed(4)}
+                              </p>
+                            )}
+                            {event.source && (
+                              <a 
+                                href={event.source} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-sm text-emerald-400 hover:text-emerald-300"
+                              >
+                                Source: {formatSourceUrl(event.source)}
+                              </a>
+                            )}
+                            <div className="mt-3">
+                            <button 
+                              onClick={() => {
+                                // Store the current event in localStorage
+                                localStorage.setItem('selectedEvent', JSON.stringify(event));
+                                // Navigate to workflows page
+                                router.push(`/workflows?source=${encodeURIComponent(event.source || '')}`);
+                              }}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-lg transition-colors flex items-center gap-1"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                              </svg>
+                              Generate AI Insights
+                            </button>
+                            </div>
+                          </div>
+                          <span className="text-sm text-gray-400">{event.time_ago}</span>
+                        </div>
+                      </li>
+                    ))
+                  ) : (
+                    <li className="p-4 bg-gray-700 rounded-lg">
+                      <p>No events match your filter criteria. Try adjusting the filters.</p>
+                    </li>
+                  )}
+                  
+                  {loadingMore && (
+                    <li className="flex justify-center items-center p-4">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
+                    </li>
+                  )}
+                  
+                  {eventData.length === 0 && (
+                    <li className="p-4 bg-gray-700 rounded-lg">
+                      <p>No events found. Please check your connection to the database.</p>
+                    </li>
+                  )}
+                  
+                  {visibleEventCount >= filteredEventData.length && filteredEventData.length > 0 && (
+                    <li className="p-4 text-center text-gray-400">
+                      <p>All events loaded</p>
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
           
           <footer className="text-center text-gray-400 py-8">
             <p>© 2025 Spotlight. All rights reserved.</p>
@@ -639,20 +903,3 @@ export default function HomePage() {
     </div>
   );
 }
-// {/* Dashboard content */}
-// <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-// <div className="bg-gray-800 p-6 rounded-lg">
-//   <h2 className="text-2xl font-bold mb-4">Projects</h2>
-//   <p>Manage your ongoing projects and initiatives.</p>
-// </div>
-
-// <div className="bg-gray-800 p-6 rounded-lg">
-//   <h2 className="text-2xl font-bold mb-4">Analytics</h2>
-//   <p>Access detailed metrics and performance data.</p>
-// </div>
-
-// <div className="bg-gray-800 p-6 rounded-lg">
-//   <h2 className="text-2xl font-bold mb-4">Settings</h2>
-//   <p>Customize your account and application preferences.</p>
-// </div>
-// </div>

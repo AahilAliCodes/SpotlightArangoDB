@@ -188,9 +188,9 @@ def main():
         print("Connecting to ArangoDB...")
         db = connect_to_arango()
 
-        print("Deleting collections...")
-        delete_collections()
-        print("Collections deleted successfully!")
+        # print("Deleting collections...")
+        # delete_collections()
+        # print("Collections deleted successfully!")
         
         print("Setting up collections...")
         collections = setup_collections(db)

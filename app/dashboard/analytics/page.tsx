@@ -2,17 +2,12 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
-import { Slider } from '@/components/ui/slider';
-import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Info } from 'lucide-react';
-import _ from 'lodash';
+import { Info, Send, Loader2 } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import axios from 'axios';
 
 // Set your Mapbox access token here
 // In production, use environment variables
@@ -30,42 +25,38 @@ interface EventData {
   coordinates: [number, number];
 }
 
-// Define patterns that our AI agent might find
-interface Pattern {
-  id: string;
-  name: string;
-  description: string;
-  confidence: number;
-  relatedEvents: number[];
+// Define chat message interface
+interface ChatMessage {
+  role: 'user' | 'ai';
+  content: string;
+  timestamp: Date;
+  isLoading?: boolean;
 }
 
 // Define the component
 function GeoEventAnalysis() {
   // State for events data
   const [events, setEvents] = useState<EventData[]>([]);
+  const [filteredEvents, setFilteredEvents] = useState<EventData[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-
-  // State for filters
-  const [quadClassFilters, setQuadClassFilters] = useState<{[key: number]: boolean}>({
-    1: true, // Verbal Cooperation
-    2: true, // Material Cooperation 
-    3: true, // Verbal Conflict
-    4: true  // Material Conflict
-  });
-  const [intensityFilter, setIntensityFilter] = useState<[number, number]>([-10, 10]); // Goldstein score range
   
-  // State for AI-detected patterns
-  const [patterns, setPatterns] = useState<Pattern[]>([]);
-  const [selectedPattern, setSelectedPattern] = useState<string | null>(null);
-
-  // Refs for map views
-  const quadClassMapRef = useRef<mapboxgl.Map | null>(null);
-  const generalMapRef = useRef<mapboxgl.Map | null>(null);
-  const countryMapRef = useRef<mapboxgl.Map | null>(null);
-  const quadClassMapContainerRef = useRef<HTMLDivElement>(null);
-  const generalMapContainerRef = useRef<HTMLDivElement>(null);
-  const countryMapContainerRef = useRef<HTMLDivElement>(null);
+  // State for chat
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      role: 'ai',
+      content: "Welcome! Ask me anything about the geopolitical event data. For example, try 'Show me all events in the US' or 'What countries had the most conflict events?'",
+      timestamp: new Date(),
+    }
+  ]);
+  const [input, setInput] = useState<string>('');
+  const [queryInProgress, setQueryInProgress] = useState<boolean>(false);
+  const [usingFallback, setUsingFallback] = useState<boolean>(false);
+  
+  // Refs
+  const mapRef = useRef<mapboxgl.Map | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch events data
   useEffect(() => {
@@ -80,9 +71,7 @@ function GeoEventAnalysis() {
         
         const data = await response.json();
         setEvents(data);
-
-        // Analyze the data for patterns after receiving it
-        analyzePatterns(data);
+        setFilteredEvents(data); // Initially show all events
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error occurred');
         console.error('Failed to fetch events:', err);
@@ -94,217 +83,62 @@ function GeoEventAnalysis() {
     fetchEvents();
   }, []);
 
-  // Initialize the maps once we have data
+  // Initialize the map once we have data
   useEffect(() => {
     if (events.length > 0 && !loading) {
-      initializeMaps();
+      initializeMap();
     }
 
-    // Cleanup maps on unmount
+    // Cleanup map on unmount
     return () => {
-      if (quadClassMapRef.current) {
-        quadClassMapRef.current.remove();
-      }
-      if (generalMapRef.current) {
-        generalMapRef.current.remove();
-      }
-      if (countryMapRef.current) {
-        countryMapRef.current.remove();
+      if (mapRef.current) {
+        mapRef.current.remove();
       }
     };
   }, [events, loading]);
 
-  // Update maps when filters change
+  // Update map when filtered events change
   useEffect(() => {
-    if (quadClassMapRef.current && generalMapRef.current && countryMapRef.current) {
-      updateMaps();
+    if (mapRef.current && filteredEvents.length > 0) {
+      updateMap();
     }
-  }, [quadClassFilters, intensityFilter, selectedPattern]);
+  }, [filteredEvents]);
 
-  // Initialize Mapbox maps
-  const initializeMaps = () => {
+  // Scroll to the bottom of chat when messages change
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  // Initialize Mapbox map
+  const initializeMap = () => {
     try {
-      // Initialize QuadClass Map
-      if (quadClassMapContainerRef.current) {
-        quadClassMapRef.current = new mapboxgl.Map({
-          container: quadClassMapContainerRef.current,
-          style: 'mapbox://styles/mapbox/light-v11',
+      if (mapContainerRef.current) {
+        mapRef.current = new mapboxgl.Map({
+          container: mapContainerRef.current,
+          style: 'mapbox://styles/mapbox/dark-v11',
           center: [0, 20],
           zoom: 1.5
         });
 
         // Add navigation controls
-        quadClassMapRef.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+        mapRef.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
         
         // Wait for map to load before adding sources and layers
-        quadClassMapRef.current.on('load', () => {
-          addQuadClassLayers();
-        });
-      }
-      
-      // Initialize General Map
-      if (generalMapContainerRef.current) {
-        generalMapRef.current = new mapboxgl.Map({
-          container: generalMapContainerRef.current,
-          style: 'mapbox://styles/mapbox/light-v11',
-          center: [0, 20],
-          zoom: 1.5
-        });
-
-        // Add navigation controls
-        generalMapRef.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
-        
-        // Wait for map to load before adding sources and layers
-        generalMapRef.current.on('load', () => {
-          addGeneralHeatmapLayer();
-        });
-      }
-      
-      // Initialize Country Map
-      if (countryMapContainerRef.current) {
-        countryMapRef.current = new mapboxgl.Map({
-          container: countryMapContainerRef.current,
-          style: 'mapbox://styles/mapbox/light-v11',
-          center: [0, 20],
-          zoom: 1.5
-        });
-
-        // Add navigation controls
-        countryMapRef.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
-        
-        // Wait for map to load before adding sources and layers
-        countryMapRef.current.on('load', () => {
-          addCountryHeatmapLayer();
+        mapRef.current.on('load', () => {
+          addHeatmapLayer();
         });
       }
     } catch (err) {
-      console.error("Error initializing maps:", err);
-      setError("Failed to initialize maps. Please refresh the page.");
+      console.error("Error initializing map:", err);
+      setError("Failed to initialize map. Please refresh the page.");
     }
   };
 
-  // Add separate layers for each QuadClass - heatmap only
-  const addQuadClassLayers = () => {
-    if (!quadClassMapRef.current) return;
-    
-    const quadClassNames = {
-      1: 'Verbal Cooperation',
-      2: 'Material Cooperation',
-      3: 'Verbal Conflict',
-      4: 'Material Conflict'
-    };
-    
-    const quadClassColors = {
-      1: 'rgb(44, 186, 0)',   // Green
-      2: 'rgb(0, 112, 255)',  // Blue
-      3: 'rgb(255, 170, 0)',  // Orange
-      4: 'rgb(255, 0, 0)'     // Red
-    };
-
-    // For each QuadClass, create a separate source and heatmap layer
-    for (let qc = 1; qc <= 4; qc++) {
-      const qcEvents = events.filter(e => e.quadclass === qc);
-      
-      if (qcEvents.length === 0) continue;
-      
-      // Create GeoJSON for this QuadClass
-      const geojson = {
-        type: 'FeatureCollection',
-        features: qcEvents.map(event => ({
-          type: 'Feature',
-          properties: {
-            quadclass: event.quadclass,
-            goldsteinscore: event.goldsteinscore,
-            fullname: event.fullname,
-            countryCode: event.countryCode,
-            source: event.source
-          },
-          geometry: {
-            type: 'Point',
-            coordinates: [event.coordinates[1], event.coordinates[0]] // Mapbox uses [lng, lat]
-          }
-        }))
-      };
-
-      // Add source for this QuadClass
-      const sourceId = `quadclass-${qc}-source`;
-      if (!quadClassMapRef.current.getSource(sourceId)) {
-        quadClassMapRef.current.addSource(sourceId, {
-          type: 'geojson',
-          data: geojson
-        });
-      }
-
-      // Get RGB values for the current quadclass color
-      const colorMatch = quadClassColors[qc as keyof typeof quadClassColors].match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-      const r = colorMatch ? colorMatch[1] : '0';
-      const g = colorMatch ? colorMatch[2] : '0';
-      const b = colorMatch ? colorMatch[3] : '0';
-
-      // Add heatmap layer with increased intensity for better visualization
-      const layerId = `quadclass-${qc}-heat`;
-      if (!quadClassMapRef.current.getLayer(layerId)) {
-        quadClassMapRef.current.addLayer({
-          id: layerId,
-          type: 'heatmap',
-          source: sourceId,
-          layout: {
-            visibility: quadClassFilters[qc] ? 'visible' : 'none'
-          },
-          paint: {
-            // Increase weight based on Goldstein score for higher importance
-            'heatmap-weight': [
-              'interpolate',
-              ['linear'],
-              ['abs', ['get', 'goldsteinscore']],
-              0, 0.7,  // Increased minimum weight
-              10, 1.5  // Increased maximum weight
-            ],
-            // Use color based on QuadClass
-            'heatmap-color': [
-              'interpolate',
-              ['linear'],
-              ['heatmap-density'],
-              0, 'rgba(0, 0, 0, 0)',
-              0.1, `rgba(${r}, ${g}, ${b}, 0.3)`,
-              0.3, `rgba(${r}, ${g}, ${b}, 0.5)`,
-              0.6, `rgba(${r}, ${g}, ${b}, 0.7)`,
-              0.9, quadClassColors[qc as keyof typeof quadClassColors]
-            ],
-            // Increase radius for better visibility
-            'heatmap-radius': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              0, 8,
-              6, 20,
-              10, 35
-            ],
-            // Keep high opacity at all zoom levels
-            'heatmap-opacity': 0.9
-          }
-        });
-      }
-    }
-  };
-
-  // Add general heatmap layer showing all events - heatmap only
-  const addGeneralHeatmapLayer = () => {
-    if (!generalMapRef.current) return;
-
-    // Filter events based on current filters
-    const filteredEvents = events.filter(event => {
-      const passesQuadClass = quadClassFilters[event.quadclass];
-      const passesIntensity = event.goldsteinscore >= intensityFilter[0] && 
-                            event.goldsteinscore <= intensityFilter[1];
-      
-      // If a pattern is selected, check if this event is part of it
-      const passesPattern = selectedPattern ? 
-        patterns.find(p => p.id === selectedPattern)?.relatedEvents.includes(events.indexOf(event)) : 
-        true;
-        
-      return passesQuadClass && passesIntensity && passesPattern;
-    });
+  // Add heatmap layer
+  const addHeatmapLayer = () => {
+    if (!mapRef.current) return;
 
     // Create GeoJSON for filtered events
     const geojson = {
@@ -327,18 +161,18 @@ function GeoEventAnalysis() {
     };
 
     // Add or update source
-    const sourceId = 'all-events-source';
-    if (generalMapRef.current.getSource(sourceId)) {
-      (generalMapRef.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(geojson as any);
+    const sourceId = 'events-source';
+    if (mapRef.current.getSource(sourceId)) {
+      (mapRef.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(geojson as any);
     } else {
-      generalMapRef.current.addSource(sourceId, {
+      mapRef.current.addSource(sourceId, {
         type: 'geojson',
         data: geojson
       });
 
-      // Add enhanced heatmap layer
-      generalMapRef.current.addLayer({
-        id: 'all-events-heat',
+      // Add heatmap layer
+      mapRef.current.addLayer({
+        id: 'events-heat',
         type: 'heatmap',
         source: sourceId,
         paint: {
@@ -350,17 +184,16 @@ function GeoEventAnalysis() {
             0, 0.7,
             10, 1.5
           ],
-          // Enhanced color gradient for heatmap
+          // Color gradient based on event type
           'heatmap-color': [
             'interpolate',
             ['linear'],
             ['heatmap-density'],
             0, 'rgba(0, 0, 0, 0)',
-            0.1, 'rgba(0, 0, 255, 0.3)',
-            0.3, 'rgba(0, 255, 255, 0.5)',
-            0.5, 'rgba(0, 255, 0, 0.6)',
-            0.7, 'rgba(255, 255, 0, 0.7)',
-            0.9, 'rgba(255, 0, 0, 0.8)',
+            0.2, 'rgba(65, 105, 225, 0.5)', // Blue (cooperation)
+            0.4, 'rgba(0, 255, 255, 0.6)',
+            0.6, 'rgba(255, 165, 0, 0.7)', // Orange 
+            0.8, 'rgba(255, 0, 0, 0.8)',    // Red (conflict)
             1, 'rgba(255, 0, 0, 1)'
           ],
           // Increased radius for better coverage
@@ -368,458 +201,389 @@ function GeoEventAnalysis() {
             'interpolate',
             ['linear'],
             ['zoom'],
-            0, 8,
-            6, 25,
-            10, 40
+            0, 10,
+            6, 30,
+            10, 50
           ],
-          // Keep high opacity at all zoom levels
+          // Keep high opacity
           'heatmap-opacity': 0.9
         }
       });
-    }
-  };
 
-  // Add country heatmap layer showing events by country
-  const addCountryHeatmapLayer = () => {
-    if (!countryMapRef.current) return;
-    
-    // First, we need to create a data structure that counts events per country
-    const eventsByCountry = {};
-    
-    // Filter events based on current filters
-    const filteredEvents = events.filter(event => {
-      const passesQuadClass = quadClassFilters[event.quadclass];
-      const passesIntensity = event.goldsteinscore >= intensityFilter[0] && 
-                            event.goldsteinscore <= intensityFilter[1];
-      
-      // If a pattern is selected, check if this event is part of it
-      const passesPattern = selectedPattern ? 
-        patterns.find(p => p.id === selectedPattern)?.relatedEvents.includes(events.indexOf(event)) : 
-        true;
-        
-      return passesQuadClass && passesIntensity && passesPattern;
-    });
-    
-    // Count events by country
-    filteredEvents.forEach(event => {
-      if (event.countryCode) {
-        if (!eventsByCountry[event.countryCode]) {
-          eventsByCountry[event.countryCode] = 0;
-        }
-        eventsByCountry[event.countryCode]++;
-      }
-    });
-    
-    // Check if we already have the world boundaries source
-    const sourceId = 'country-boundaries-source';
-    
-    if (!countryMapRef.current.getSource(sourceId)) {
-      // Fetch the world boundaries GeoJSON - we'll use Natural Earth data via Mapbox vector tiles
-      countryMapRef.current.addSource(sourceId, {
-        type: 'vector',
-        url: 'mapbox://mapbox.country-boundaries-v1'
-      });
-      
-      // Add country polygon layer
-      countryMapRef.current.addLayer({
-        id: 'country-fills',
-        type: 'fill',
+      // Add point layer for interaction
+      mapRef.current.addLayer({
+        id: 'events-points',
+        type: 'circle',
         source: sourceId,
-        'source-layer': 'country_boundaries',
-        layout: {},
         paint: {
-          'fill-color': [
-            'case',
-            ['has', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-            [
-              'interpolate',
-              ['linear'],
-              ['get', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-              0, 'rgba(255, 165, 0, 0)', // No events - transparent
-              1, 'rgba(255, 165, 0, 0.2)', // Few events - light orange
-              5, 'rgba(255, 165, 0, 0.4)', 
-              10, 'rgba(255, 165, 0, 0.6)',
-              20, 'rgba(255, 165, 0, 0.8)',
-              50, 'rgba(255, 165, 0, 1)' // Many events - solid orange
-            ],
-            'rgba(0, 0, 0, 0)' // No data - transparent
+          'circle-radius': 4,
+          'circle-color': [
+            'match',
+            ['get', 'quadclass'],
+            1, '#4169E1', // Verbal Cooperation - Blue
+            2, '#00BFFF', // Material Cooperation - Light Blue
+            3, '#FFA500', // Verbal Conflict - Orange
+            4, '#FF0000', // Material Conflict - Red
+            '#888888'     // Default - Gray
           ],
-          'fill-outline-color': 'rgba(0, 0, 0, 0.2)'
-        }
-      });
-      
-      // Add a hover effect
-      countryMapRef.current.addLayer({
-        id: 'country-borders',
-        type: 'line',
-        source: sourceId,
-        'source-layer': 'country_boundaries',
-        layout: {},
-        paint: {
-          'line-color': 'rgba(0, 0, 0, 0.5)',
-          'line-width': 1
-        }
-      });
-      
-      // Add country labels
-      countryMapRef.current.addLayer({
-        id: 'country-labels',
-        type: 'symbol',
-        source: sourceId,
-        'source-layer': 'country_boundaries',
-        layout: {
-          'text-field': [
-            'format',
-            ['get', 'name_en'],
-            { 'font-scale': 0.9 },
-            '\n',
-            {},
-            ['case',
-              ['has', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-              [
-                'concat',
-                ['get', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-                ' events'
-              ],
-              'No events'
-            ],
-            { 'font-scale': 0.7 }
-          ],
-          'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
-          'text-size': 12,
-          'text-max-width': 8,
-          'text-variable-anchor': ['center'],
-          'text-radial-offset': 0.5,
-          'text-justify': 'auto',
-          'text-padding': 0
+          'circle-opacity': 0.7,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': '#FFFFFF'
         },
-        paint: {
-          'text-color': 'rgba(0, 0, 0, 0.8)',
-          'text-halo-color': '#fff',
-          'text-halo-width': 1
-        }
+        'maxzoom': 14 // Only show points at high zoom levels
       });
-      
-      // Add popups on hover
-      countryMapRef.current.on('click', 'country-fills', (e) => {
-        if (e.features.length > 0) {
+
+      // Add popup on click
+      mapRef.current.on('click', 'events-points', (e) => {
+        if (e.features && e.features.length > 0) {
           const feature = e.features[0];
-          const countryCode = feature.properties.iso_3166_1_alpha_3;
-          const countryName = feature.properties.name_en;
+          const props = feature.properties;
           
-          if (eventsByCountry[countryCode]) {
-            const eventCount = eventsByCountry[countryCode];
+          if (props) {
+            const quadClassNames = {
+              1: 'Verbal Cooperation',
+              2: 'Material Cooperation',
+              3: 'Verbal Conflict',
+              4: 'Material Conflict'
+            };
+            
+            const coordinates = feature.geometry.coordinates.slice();
             
             new mapboxgl.Popup()
-              .setLngLat(e.lngLat)
+              .setLngLat(coordinates as [number, number])
               .setHTML(`
-                <h3>${countryName}</h3>
-                <p>${eventCount} events</p>
-                <p>Click to filter to just this country</p>
+                <strong>${props.fullname || 'Unknown Location'}</strong><br>
+                <span>${quadClassNames[props.quadclass as keyof typeof quadClassNames] || 'Unknown Type'}</span><br>
+                <span>Goldstein Score: ${props.goldsteinscore}</span><br>
+                ${props.source ? `<a href="${props.source}" target="_blank" rel="noopener noreferrer">Source</a>` : ''}
               `)
-              .addTo(countryMapRef.current);
-              
-            // Here we could add functionality to filter to just this country
-          } else {
-            new mapboxgl.Popup()
-              .setLngLat(e.lngLat)
-              .setHTML(`
-                <h3>${countryName}</h3>
-                <p>No events recorded</p>
-              `)
-              .addTo(countryMapRef.current);
+              .addTo(mapRef.current);
           }
         }
       });
       
-      // Change cursor to pointer when over countries with data
-      countryMapRef.current.on('mouseenter', 'country-fills', () => {
-        countryMapRef.current.getCanvas().style.cursor = 'pointer';
+      // Change cursor on hover
+      mapRef.current.on('mouseenter', 'events-points', () => {
+        if (mapRef.current) mapRef.current.getCanvas().style.cursor = 'pointer';
       });
       
-      countryMapRef.current.on('mouseleave', 'country-fills', () => {
-        countryMapRef.current.getCanvas().style.cursor = '';
+      mapRef.current.on('mouseleave', 'events-points', () => {
+        if (mapRef.current) mapRef.current.getCanvas().style.cursor = '';
       });
+    }
+  };
+
+  // Update map when filtered events change
+  const updateMap = () => {
+    if (!mapRef.current) return;
+    
+    // Create updated GeoJSON
+    const geojson = {
+      type: 'FeatureCollection',
+      features: filteredEvents.map((event, index) => ({
+        type: 'Feature',
+        properties: {
+          id: index,
+          quadclass: event.quadclass,
+          goldsteinscore: event.goldsteinscore,
+          fullname: event.fullname,
+          countryCode: event.countryCode,
+          source: event.source
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: [event.coordinates[1], event.coordinates[0]] // Mapbox uses [lng, lat]
+        }
+      }))
+    };
+
+    // Update source data
+    const sourceId = 'events-source';
+    if (mapRef.current.getSource(sourceId)) {
+      (mapRef.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(geojson as any);
+    }
+    
+    // Fit map to the filtered data points
+    if (filteredEvents.length > 0 && filteredEvents.length < events.length) {
+      // Only adjust bounds if we're filtering to a subset
+      const bounds = new mapboxgl.LngLatBounds();
+      
+      filteredEvents.forEach(event => {
+        bounds.extend([event.coordinates[1], event.coordinates[0]]);
+      });
+      
+      mapRef.current.fitBounds(bounds, {
+        padding: 50,
+        maxZoom: 6
+      });
+    } else if (filteredEvents.length === events.length) {
+      // Reset to world view if showing all events
+      mapRef.current.flyTo({
+        center: [0, 20],
+        zoom: 1.5
+      });
+    }
+  };
+
+  // Client-side fallback for natural language processing
+  const clientSideQueryProcessing = (query: string) => {
+    const normalizedQuery = query.toLowerCase().trim();
+    
+    // Extract country code
+    let countryFilter = null;
+    if (normalizedQuery.includes(' in us') || normalizedQuery.includes(' in the us') || 
+        normalizedQuery.includes(' in united states') || normalizedQuery.includes(' in the united states')) {
+      countryFilter = 'US';
+    } else if (normalizedQuery.includes(' in uk') || normalizedQuery.includes(' in the uk') || 
+               normalizedQuery.includes(' in united kingdom') || normalizedQuery.includes(' in the united kingdom')) {
+      countryFilter = 'GB';
+    } else if (normalizedQuery.includes(' in canada') || normalizedQuery.includes(' in the canada')) {
+      countryFilter = 'CA';
+    }
+    // Add more country checks as needed
+    
+    // Extract event types
+    const eventTypeFilters = {
+      cooperation: normalizedQuery.includes('cooperation'),
+      conflict: normalizedQuery.includes('conflict'),
+      verbal: normalizedQuery.includes('verbal'),
+      material: normalizedQuery.includes('material')
+    };
+    
+    // Extract Goldstein score filtering
+    let goldsteinMin = -10;
+    let goldsteinMax = 10;
+    
+    if (normalizedQuery.includes('above') || normalizedQuery.includes('greater than')) {
+      const scoreMatch = normalizedQuery.match(/(above|greater than|>)\s+(\d+)/);
+      if (scoreMatch && scoreMatch[2]) {
+        goldsteinMin = parseInt(scoreMatch[2]);
+      }
+    }
+    
+    if (normalizedQuery.includes('below') || normalizedQuery.includes('less than')) {
+      const scoreMatch = normalizedQuery.match(/(below|less than|<)\s+(\d+)/);
+      if (scoreMatch && scoreMatch[2]) {
+        goldsteinMax = parseInt(scoreMatch[2]);
+      }
+    }
+    
+    // Apply filters
+    let filtered = [...events];
+    
+    // Apply country filter
+    if (countryFilter) {
+      filtered = filtered.filter(event => event.countryCode === countryFilter);
+    }
+    
+    // Apply event type filters
+    if (eventTypeFilters.cooperation && !eventTypeFilters.conflict) {
+      filtered = filtered.filter(event => event.quadclass === 1 || event.quadclass === 2);
+      
+      if (eventTypeFilters.verbal) {
+        filtered = filtered.filter(event => event.quadclass === 1);
+      } else if (eventTypeFilters.material) {
+        filtered = filtered.filter(event => event.quadclass === 2);
+      }
+    } else if (eventTypeFilters.conflict && !eventTypeFilters.cooperation) {
+      filtered = filtered.filter(event => event.quadclass === 3 || event.quadclass === 4);
+      
+      if (eventTypeFilters.verbal) {
+        filtered = filtered.filter(event => event.quadclass === 3);
+      } else if (eventTypeFilters.material) {
+        filtered = filtered.filter(event => event.quadclass === 4);
+      }
+    } else if (eventTypeFilters.verbal) {
+      filtered = filtered.filter(event => event.quadclass === 1 || event.quadclass === 3);
+    } else if (eventTypeFilters.material) {
+      filtered = filtered.filter(event => event.quadclass === 2 || event.quadclass === 4);
+    }
+    
+    // Apply Goldstein score filters
+    filtered = filtered.filter(event => 
+      event.goldsteinscore >= goldsteinMin && 
+      event.goldsteinscore <= goldsteinMax
+    );
+    
+    // Generate response message
+    let responseMessage = "";
+    
+    if (filtered.length === 0) {
+      responseMessage = "I couldn't find any events matching your criteria.";
+    } else if (filtered.length === events.length) {
+      responseMessage = "Showing all events. You can be more specific with your query to filter the results.";
     } else {
-      // Update data in the existing layers
-      countryMapRef.current.setPaintProperty('country-fills', 'fill-color', [
-        'case',
-        ['has', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-        [
-          'interpolate',
-          ['linear'],
-          ['get', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-          0, 'rgba(255, 165, 0, 0)', // No events - transparent
-          1, 'rgba(255, 165, 0, 0.2)', // Few events - light orange
-          5, 'rgba(255, 165, 0, 0.4)', 
-          10, 'rgba(255, 165, 0, 0.6)',
-          20, 'rgba(255, 165, 0, 0.8)',
-          50, 'rgba(255, 165, 0, 1)' // Many events - solid orange
-        ],
-        'rgba(0, 0, 0, 0)' // No data - transparent
-      ]);
+      // Country-specific response
+      if (countryFilter) {
+        responseMessage = `Found ${filtered.length} events in ${countryFilter === 'US' ? 'the United States' : countryFilter === 'GB' ? 'the United Kingdom' : countryFilter}.`;
+      } else {
+        responseMessage = `Found ${filtered.length} events matching your criteria.`;
+      }
       
-      countryMapRef.current.setLayoutProperty('country-labels', 'text-field', [
-        'format',
-        ['get', 'name_en'],
-        { 'font-scale': 0.9 },
-        '\n',
-        {},
-        ['case',
-          ['has', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-          [
-            'concat',
-            ['get', ['get', 'iso_3166_1_alpha_3'], ['literal', eventsByCountry]],
-            ' events'
-          ],
-          'No events'
-        ],
-        { 'font-scale': 0.7 }
-      ]);
+      // Add event type info
+      if (eventTypeFilters.cooperation && !eventTypeFilters.conflict) {
+        responseMessage += ` These are cooperation events`;
+        if (eventTypeFilters.verbal) responseMessage += ` of the verbal type.`;
+        else if (eventTypeFilters.material) responseMessage += ` of the material type.`;
+        else responseMessage += `.`;
+      } else if (eventTypeFilters.conflict && !eventTypeFilters.cooperation) {
+        responseMessage += ` These are conflict events`;
+        if (eventTypeFilters.verbal) responseMessage += ` of the verbal type.`;
+        else if (eventTypeFilters.material) responseMessage += ` of the material type.`;
+        else responseMessage += `.`;
+      }
+      
+      // Add Goldstein info
+      if (goldsteinMin > -10 || goldsteinMax < 10) {
+        responseMessage += ` Goldstein scores are between ${goldsteinMin} and ${goldsteinMax}.`;
+      }
     }
+    
+    return {
+      message: responseMessage,
+      filteredEvents: filtered
+    };
   };
 
-  // Update maps based on current filters
-  const updateMaps = () => {
+  // Process query with ArangoDB Langchain or fallback to client-side processing
+  const processNaturalLanguageQuery = async () => {
+    if (!input.trim()) return;
+    
     try {
-      // Update QuadClass map layer visibility
-      if (quadClassMapRef.current) {
-        for (let qc = 1; qc <= 4; qc++) {
-          const layerId = `quadclass-${qc}-heat`;
-          
-          if (quadClassMapRef.current.getLayer(layerId)) {
-            quadClassMapRef.current.setLayoutProperty(
-              layerId,
-              'visibility',
-              quadClassFilters[qc] ? 'visible' : 'none'
-            );
-          }
+      // Add user message
+      setMessages(prev => [
+        ...prev, 
+        { role: 'user', content: input, timestamp: new Date() }
+      ]);
+      
+      // Add loading message
+      setMessages(prev => [
+        ...prev, 
+        { role: 'ai', content: '...', timestamp: new Date(), isLoading: true }
+      ]);
+      
+      setQueryInProgress(true);
+      const userQuery = input;
+      setInput(''); // Clear input field
+      
+      // Try server API first
+      try {
+        const response = await axios.post('/api/natural-language-query', {
+          query: userQuery
+        });
+        
+        // Remove loading message
+        setMessages(prev => prev.filter(msg => !msg.isLoading));
+        
+        // Add AI response
+        setMessages(prev => [
+          ...prev, 
+          { role: 'ai', content: response.data.answer, timestamp: new Date() }
+        ]);
+        
+        // Filter events if results were returned
+        if (response.data.aqlResult && Array.isArray(response.data.aqlResult)) {
+          setFilteredEvents(response.data.aqlResult);
         }
-      }
-
-      // Update general map with filtered events
-      if (generalMapRef.current) {
-        addGeneralHeatmapLayer();
+        
+        setUsingFallback(false);
+        
+      } catch (apiError) {
+        console.warn('API request failed, falling back to client-side processing:', apiError);
+        
+        // Fall back to client-side processing
+        const result = clientSideQueryProcessing(userQuery);
+        
+        // Remove loading message
+        setMessages(prev => prev.filter(msg => !msg.isLoading));
+        
+        // Add AI response from client-side processing
+        setMessages(prev => [
+          ...prev, 
+          { 
+            role: 'ai', 
+            content: result.message + "\n\n(Note: I'm currently using basic text matching since the database query service is unavailable.)",
+            timestamp: new Date() 
+          }
+        ]);
+        
+        // Update filtered events
+        setFilteredEvents(result.filteredEvents);
+        
+        setUsingFallback(true);
       }
       
-      // Update country map with filtered events
-      if (countryMapRef.current) {
-        addCountryHeatmapLayer();
-      }
-    } catch (err) {
-      console.error("Error updating maps:", err);
+    } catch (error) {
+      console.error('Error processing query:', error);
+      
+      // Remove loading message
+      setMessages(prev => prev.filter(msg => !msg.isLoading));
+      
+      // Add error message
+      setMessages(prev => [
+        ...prev, 
+        { 
+          role: 'ai', 
+          content: 'Sorry, I encountered an error processing your query. Please try again.',
+          timestamp: new Date() 
+        }
+      ]);
+    } finally {
+      setQueryInProgress(false);
     }
   };
 
-  // AI Pattern Analysis function
-  const analyzePatterns = (data: EventData[]) => {
-    // This is a simple AI agent that finds patterns in the data
-    // In a real application, this could be more sophisticated or call a dedicated AI service
-    
-    // Detected patterns will be stored here
-    const detectedPatterns: Pattern[] = [];
-    
-    // Pattern 1: Geographic clusters
-    const geoClusters = findGeographicClusters(data);
-    geoClusters.forEach((cluster, index) => {
-      detectedPatterns.push({
-        id: `geo-cluster-${index}`,
-        name: `Geographic Cluster ${index + 1}`,
-        description: `A concentration of ${cluster.count} events in the ${cluster.region} region`,
-        confidence: cluster.confidence,
-        relatedEvents: cluster.eventIndices
-      });
-    });
-    
-    // Pattern 2: Temporal sequences
-    const tempSequences = findTemporalSequences(data);
-    tempSequences.forEach((sequence, index) => {
-      detectedPatterns.push({
-        id: `temporal-${index}`,
-        name: `Event Sequence ${index + 1}`,
-        description: sequence.description,
-        confidence: sequence.confidence,
-        relatedEvents: sequence.eventIndices
-      });
-    });
-    
-    // Pattern 3: Unusual country/quadclass combinations
-    const unusualCombos = findUnusualCombinations(data);
-    unusualCombos.forEach((combo, index) => {
-      detectedPatterns.push({
-        id: `unusual-combo-${index}`,
-        name: `Unusual Pattern ${index + 1}`,
-        description: combo.description,
-        confidence: combo.confidence,
-        relatedEvents: combo.eventIndices
-      });
-    });
-    
-    setPatterns(detectedPatterns);
+  // Handle input change
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value);
   };
-  
-  // Find geographic clusters
-  const findGeographicClusters = (data: EventData[]) => {
-    // Simple clustering algorithm
-    const clusters: {
-      center: [number, number];
-      count: number;
-      region: string;
-      confidence: number;
-      eventIndices: number[];
-    }[] = [];
-    
-    // Group events by region/country
-    const countryGroups = _.groupBy(data, 'countryCode');
-    
-    // Find significant clusters by country
-    Object.entries(countryGroups).forEach(([countryCode, events]) => {
-      if (events.length >= 3) { // At least 3 events to be considered a cluster
-        const region = events[0].fullname || countryCode;
-        const avgLat = _.meanBy(events, e => e.coordinates[0]);
-        const avgLon = _.meanBy(events, e => e.coordinates[1]);
-        const eventIndices = events.map(event => data.findIndex(e => 
-          e.coordinates[0] === event.coordinates[0] && 
-          e.coordinates[1] === event.coordinates[1] &&
-          e.quadclass === event.quadclass
-        ));
-        
-        clusters.push({
-          center: [avgLat, avgLon],
-          count: events.length,
-          region,
-          confidence: Math.min(0.5 + (events.length / 20), 0.95), // Higher count = higher confidence
-          eventIndices
-        });
-      }
-    });
-    
-    return clusters;
+
+  // Handle form submission
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    processNaturalLanguageQuery();
   };
-  
-  // Find temporal sequences (simplified)
-  const findTemporalSequences = (data: EventData[]) => {
-    // In a real application, this would analyze event timestamps
-    // Here we're simulating temporal patterns based on available data
-    
-    // Group by QuadClass
-    const quadClassGroups = _.groupBy(data, 'quadclass');
-    
-    const sequences: {
-      description: string;
-      confidence: number;
-      eventIndices: number[];
-    }[] = [];
-    
-    // Look for escalation patterns (verbal conflict followed by material conflict)
-    if (quadClassGroups[3] && quadClassGroups[4]) {
-      const verbalConflicts = quadClassGroups[3];
-      const materialConflicts = quadClassGroups[4];
-      
-      // Group by country
-      const verbalByCountry = _.groupBy(verbalConflicts, 'countryCode');
-      const materialByCountry = _.groupBy(materialConflicts, 'countryCode');
-      
-      // Find countries with both verbal and material conflicts
-      const commonCountries = _.intersection(
-        Object.keys(verbalByCountry), 
-        Object.keys(materialByCountry)
-      );
-      
-      if (commonCountries.length > 0) {
-        const country = commonCountries[0];
-        const verbal = verbalByCountry[country];
-        const material = materialByCountry[country];
-        
-        const eventIndices = [
-          ...verbal.map(event => data.findIndex(e => 
-            e.coordinates[0] === event.coordinates[0] && 
-            e.coordinates[1] === event.coordinates[1] &&
-            e.quadclass === event.quadclass
-          )),
-          ...material.map(event => data.findIndex(e => 
-            e.coordinates[0] === event.coordinates[0] && 
-            e.coordinates[1] === event.coordinates[1] &&
-            e.quadclass === event.quadclass
-          ))
-        ];
-        
-        sequences.push({
-          description: `Potential conflict escalation in ${verbal[0].fullname || country}`,
-          confidence: 0.7,
-          eventIndices
-        });
-      }
+
+  // Handle keypress
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      processNaturalLanguageQuery();
     }
-    
-    return sequences;
   };
-  
-  // Find unusual combinations
-  const findUnusualCombinations = (data: EventData[]) => {
-    const combinations: {
-      description: string;
-      confidence: number;
-      eventIndices: number[];
-    }[] = [];
+
+  // Reset to show all events
+  const resetView = () => {
+    setFilteredEvents(events);
     
-    // Look for countries with both cooperation and conflict
-    const countryGroups = _.groupBy(data, 'countryCode');
-    
-    Object.entries(countryGroups).forEach(([countryCode, events]) => {
-      // Group by quadClass
-      const quadClasses = _.groupBy(events, 'quadclass');
-      
-      // If both cooperation (1,2) and conflict (3,4) are present
-      const hasCooperation = quadClasses[1]?.length > 0 || quadClasses[2]?.length > 0;
-      const hasConflict = quadClasses[3]?.length > 0 || quadClasses[4]?.length > 0;
-      
-      if (hasCooperation && hasConflict) {
-        const country = events[0].fullname || countryCode;
-        const eventIndices = events.map(event => data.findIndex(e => 
-          e.coordinates[0] === event.coordinates[0] && 
-          e.coordinates[1] === event.coordinates[1] &&
-          e.quadclass === event.quadclass
-        ));
-        
-        combinations.push({
-          description: `Mixed cooperation and conflict events in ${country}`,
-          confidence: 0.75,
-          eventIndices
-        });
+    // Add system message
+    setMessages(prev => [
+      ...prev, 
+      { 
+        role: 'ai', 
+        content: 'View reset to show all events.',
+        timestamp: new Date() 
       }
-    });
-    
-    return combinations;
+    ]);
   };
 
-  // Handle QuadClass filter changes
-  const handleQuadClassFilterChange = (quadClass: number) => {
-    setQuadClassFilters(prev => ({
-      ...prev,
-      [quadClass]: !prev[quadClass]
-    }));
-  };
-
-  // Handle intensity filter changes
-  const handleIntensityFilterChange = (values: number[]) => {
-    setIntensityFilter([values[0], values[1]]);
-  };
-
-  // Handle pattern selection
-  const handlePatternChange = (patternId: string | null) => {
-    setSelectedPattern(patternId);
-  };
-
-  // Render component
   return (
     <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6">Geopolitical Event Analysis</h1>
+      <h1 className="text-3xl font-bold mb-6">Geopolitical Event Map</h1>
       
       {error && (
         <Alert className="mb-4">
           <Info className="h-4 w-4" />
           <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      
+      {usingFallback && (
+        <Alert className="mb-4">
+          <Info className="h-4 w-4" />
+          <AlertDescription>
+            Using simplified text matching for queries. For full AI-powered search, ensure the ArangoDB and Langchain packages are installed.
+          </AlertDescription>
         </Alert>
       )}
       
@@ -829,229 +593,136 @@ function GeoEventAnalysis() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Filters Panel */}
-          <Card className="lg:col-span-1">
-            <CardHeader>
-              <CardTitle>Filters & Patterns</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-lg font-medium mb-2">Event Type</h3>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="flex items-center space-x-2">
-                      <Checkbox 
-                        id="filter-verbal-coop" 
-                        checked={quadClassFilters[1]}
-                        onCheckedChange={() => handleQuadClassFilterChange(1)}
-                      />
-                      <Label htmlFor="filter-verbal-coop">Verbal Cooperation</Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox 
-                        id="filter-material-coop" 
-                        checked={quadClassFilters[2]}
-                        onCheckedChange={() => handleQuadClassFilterChange(2)}
-                      />
-                      <Label htmlFor="filter-material-coop">Material Cooperation</Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox 
-                        id="filter-verbal-conflict" 
-                        checked={quadClassFilters[3]}
-                        onCheckedChange={() => handleQuadClassFilterChange(3)}
-                      />
-                      <Label htmlFor="filter-verbal-conflict">Verbal Conflict</Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox 
-                        id="filter-material-conflict" 
-                        checked={quadClassFilters[4]}
-                        onCheckedChange={() => handleQuadClassFilterChange(4)}
-                      />
-                      <Label htmlFor="filter-material-conflict">Material Conflict</Label>
-                    </div>
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="text-lg font-medium mb-2">Intensity (Goldstein Score)</h3>
-                  <div className="px-2">
-                    <Slider 
-                      defaultValue={[-10, 10]} 
-                      min={-10} 
-                      max={10} 
-                      step={0.5}
-                      value={intensityFilter}
-                      onValueChange={handleIntensityFilterChange}
-                    />
-                    <div className="flex justify-between mt-2">
-                      <span>{intensityFilter[0]}</span>
-                      <span>{intensityFilter[1]}</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="text-lg font-medium mb-2">AI-Detected Patterns</h3>
-                  {patterns.length === 0 ? (
-                    <p>No significant patterns detected</p>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="flex items-center mb-2">
-                        <Button 
-                          variant={selectedPattern === null ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => handlePatternChange(null)}
-                        >
-                          All Events
-                        </Button>
-                      </div>
-                      
-                      {patterns.map(pattern => (
-                        <div key={pattern.id} className="flex flex-col space-y-1">
-                          <Button 
-                            variant={selectedPattern === pattern.id ? "default" : "outline"}
-                            size="sm"
-                            onClick={() => handlePatternChange(pattern.id)}
-                          >
-                            {pattern.name}
-                          </Button>
-                          {selectedPattern === pattern.id && (
-                            <div className="text-sm bg-muted p-2 rounded-md mt-1">
-                              <p>{pattern.description}</p>
-                              <div className="flex justify-between mt-1">
-                                <Badge variant="outline">{pattern.relatedEvents.length} events</Badge>
-                                <Badge variant="outline">Confidence: {Math.round(pattern.confidence * 100)}%</Badge>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          
-          {/* Maps Panel */}
+          {/* Heatmap */}
           <div className="lg:col-span-2">
-            <Tabs defaultValue="quadclass">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="quadclass">QuadClass Heatmap</TabsTrigger>
-                <TabsTrigger value="general">General Heatmap</TabsTrigger>
-              </TabsList>
-              
-              <TabsContent value="quadclass">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Events by QuadClass</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div 
-                      ref={quadClassMapContainerRef} 
-                      className="w-full h-96 rounded-md border"
-                    ></div>
-                    <div className="grid grid-cols-4 gap-2 mt-4">
-                      <div className="flex items-center">
-                        <div className="w-4 h-4 bg-green-500 mr-2"></div>
-                        <span className="text-xs">Verbal Coop</span>
-                      </div>
-                      <div className="flex items-center">
-                        <div className="w-4 h-4 bg-blue-500 mr-2"></div>
-                        <span className="text-xs">Material Coop</span>
-                      </div>
-                      <div className="flex items-center">
-                        <div className="w-4 h-4 bg-orange-500 mr-2"></div>
-                        <span className="text-xs">Verbal Conflict</span>
-                      </div>
-                      <div className="flex items-center">
-                        <div className="w-4 h-4 bg-red-500 mr-2"></div>
-                        <span className="text-xs">Material Conflict</span>
-                      </div>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Global Events Heatmap</CardTitle>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={resetView}
+                >
+                  Reset View
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <div 
+                  ref={mapContainerRef} 
+                  className="w-full h-[600px] rounded-md border"
+                ></div>
+                
+                <div className="flex flex-col items-center mt-4">
+                  <div className="w-full max-w-md h-6 bg-gradient-to-r from-blue-500 via-cyan-400 to-red-500 rounded-md"></div>
+                  <div className="flex justify-between w-full max-w-md mt-1">
+                    <span className="text-xs">Cooperation</span>
+                    <span className="text-xs">Conflict</span>
+                  </div>
+                </div>
+                
+                <div className="mt-4 bg-muted p-3 rounded-md">
+                  <div className="flex justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium">Total Events</h4>
+                      <p className="text-2xl font-bold">{events.length}</p>
                     </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-              
-              <TabsContent value="general">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>General Event Heatmap</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div 
-                      ref={generalMapContainerRef} 
-                      className="w-full h-96 rounded-md border"
-                    ></div>
-                    <div className="flex flex-col items-center mt-4">
-                      <div className="w-full max-w-md h-6 bg-gradient-to-r from-blue-500 via-green-500 to-red-500 rounded-md"></div>
-                      <div className="flex justify-between w-full max-w-md text-xs px-2">
-                        <span>Low</span>
-                        <span>Medium</span>
-                        <span>High</span>
-                      </div>
+                    <div>
+                      <h4 className="text-sm font-medium">Filtered Events</h4>
+                      <p className="text-2xl font-bold">{filteredEvents.length}</p>
                     </div>
-                    
-                    {selectedPattern && (
-                      <div className="mt-4 p-3 bg-muted rounded-md">
-                        <h4 className="font-medium">
-                          {patterns.find(p => p.id === selectedPattern)?.name} Pattern
-                        </h4>
-                        <p className="text-sm">
-                          {patterns.find(p => p.id === selectedPattern)?.description}
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-            
-            {/* Stats Card */}
-<Card className="mt-4">
-  <CardHeader>
-    <CardTitle>Event Statistics</CardTitle>
-  </CardHeader>
-  <CardContent>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div className="bg-muted p-3 rounded-md">
-        <h4 className="text-sm font-medium">Total Events</h4>
-        <p className="text-2xl font-bold">{events.length}</p>
-      </div>
-      
-      <div className="bg-muted p-3 rounded-md">
-        <h4 className="text-sm font-medium">Countries</h4>
-        <p className="text-2xl font-bold">
-          {new Set(events.map(e => e.countryCode)).size}
-        </p>
-      </div>
-      
-      <div className="bg-muted p-3 rounded-md">
-        <h4 className="text-sm font-medium">Cooperation</h4>
-        <p className="text-2xl font-bold">
-          {events.filter(e => e.quadclass === 1 || e.quadclass === 2).length}
-        </p>
-      </div>
-      
-      <div className="bg-muted p-3 rounded-md">
-        <h4 className="text-sm font-medium">Conflict</h4>
-        <p className="text-2xl font-bold">
-          {events.filter(e => e.quadclass === 3 || e.quadclass === 4).length}
-        </p>
-      </div>
-    </div>
-  </CardContent>
-</Card>
+                    <div>
+                      <h4 className="text-sm font-medium">Countries</h4>
+                      <p className="text-2xl font-bold">
+                        {new Set(filteredEvents.map(e => e.countryCode)).size}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Export a page component that renders your app component
-export default function Page() {
+          
+          {/* Chat Interface */}
+          <div className="lg:col-span-1">
+            <Card className="h-full flex flex-col">
+              <CardHeader>
+                <CardTitle>Ask About Events</CardTitle>
+              </CardHeader>
+              <CardContent className="flex-grow flex flex-col">
+                <div 
+                  ref={chatContainerRef}
+                  className="flex-grow overflow-y-auto mb-4 space-y-4 max-h-[500px]"
+                >
+                  {messages.map((message, index) => (
+                    <div 
+                      key={index} 
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div 
+                        className={`rounded-lg px-4 py-2 max-w-[85%] ${
+                          message.role === 'user' 
+                            ? 'bg-primary text-primary-foreground' 
+                            : 'bg-muted'
+                        }`}
+                      >
+                        {message.isLoading ? (
+                          <div className="flex items-center space-x-2">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>Thinking...</span>
+                          </div>
+                        ) : (
+                            <div>{message.content}</div>
+                          )}
+                          <div className="text-xs opacity-70 mt-1">
+                            {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <form onSubmit={handleSubmit} className="flex items-center space-x-2">
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyPress={handleKeyPress}
+                      placeholder="Ask about the events data..."
+                      className="flex-grow rounded-md border border-input px-3 py-2 text-sm ring-offset-background bg-background"
+                      disabled={queryInProgress}
+                    />
+                    <Button 
+                      type="submit" 
+                      size="icon"
+                      disabled={queryInProgress}
+                    >
+                      {queryInProgress ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </form>
+                  
+                  <div className="mt-4 text-xs text-muted-foreground">
+                    <p>Try asking:</p>
+                    <ul className="list-disc list-inside mt-1 space-y-1">
+                      <li>Show events in the United States</li>
+                      <li>Show conflict events</li>
+                      <li>Show cooperation events</li>
+                      <li>Show events with Goldstein scores above 5</li>
+                    </ul>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+  
+  // Export a page component that renders your app component
+  export default function Page() {
     return <GeoEventAnalysis />;
   }
