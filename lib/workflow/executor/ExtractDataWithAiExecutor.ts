@@ -3,7 +3,7 @@ import { ExecutionEnvironment } from "@/types/executor";
 import OpenAI from "openai";
 
 // Hardcoded API key
-const OPENAI_API_KEY = "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";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 export async function ExtractDataWithAiExecutor(
   environment: ExecutionEnvironment<typeof ExtractDataWithAITask>
