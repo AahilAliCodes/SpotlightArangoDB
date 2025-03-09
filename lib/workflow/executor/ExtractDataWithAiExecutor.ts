@@ -1,46 +1,37 @@
-import { symmetricDecrypt } from "@/lib/encryption";
-import prisma from "@/lib/prisma";
 import { ExtractDataWithAITask } from "@/lib/workflow/task/ExtractDataWithAI";
 import { ExecutionEnvironment } from "@/types/executor";
 import OpenAI from "openai";
+
+// Hardcoded API key
+const OPENAI_API_KEY = "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";
 
 export async function ExtractDataWithAiExecutor(
   environment: ExecutionEnvironment<typeof ExtractDataWithAITask>
 ): Promise<boolean> {
   try {
+    // Still get credentials input for logging/compatibility but don't use it
     const credentials = environment.getInput("Credentials");
     if (!credentials) {
-      environment.log.error("input->credentials not defined");
+      environment.log.info("Credentials input not defined, using hardcoded API key");
+    } else {
+      environment.log.info("Using hardcoded API key instead of provided credentials");
     }
 
     const prompt = environment.getInput("Prompt");
     if (!prompt) {
       environment.log.error("input->prompt not defined");
+      return false;
     }
 
     const content = environment.getInput("Content");
     if (!content) {
       environment.log.error("input->content not defined");
-    }
-
-    // Get credentials from DB
-    const credential = await prisma.credential.findUnique({
-      where: { id: credentials },
-    });
-
-    if (!credential) {
-      environment.log.error("credential not found");
       return false;
     }
 
-    const plainCredentialValue = symmetricDecrypt(credential.value);
-    if (!plainCredentialValue) {
-      environment.log.error("cannot decrypt credential");
-      return false;
-    }
-
+    // Create OpenAI client with the hardcoded API key
     const openai = new OpenAI({
-      apiKey: plainCredentialValue,
+      apiKey: OPENAI_API_KEY,
     });
 
     const response = await openai.chat.completions.create({
@@ -62,7 +53,7 @@ export async function ExtractDataWithAiExecutor(
 
     environment.log.info(`Prompt tokens: ${response.usage?.prompt_tokens}`);
     environment.log.info(
-      `Completition tokens: ${response.usage?.completion_tokens}`
+      `Completion tokens: ${response.usage?.completion_tokens}`
     );
 
     const result = response.choices[0].message?.content;

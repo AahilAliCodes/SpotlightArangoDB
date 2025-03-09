@@ -321,6 +321,11 @@ export default function HomePage() {
             <button className="px-4 py-2 text-gray-300 hover:text-white hover:bg-emerald-600 rounded-lg transition-colors">
               Funding
             </button>
+            <Link href="/dashboard/analytics">
+            <button className="px-4 py-2 text-gray-300 hover:text-white hover:bg-emerald-600 rounded-lg transition-colors">
+              Analytics
+            </button>
+          </Link>
             <button className="px-4 py-2 text-gray-300 hover:text-white hover:bg-emerald-600 rounded-lg transition-colors">
               Documents
             </button>
