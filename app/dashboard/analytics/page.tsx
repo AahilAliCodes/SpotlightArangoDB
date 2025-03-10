@@ -4,7 +4,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Info, Send, Loader2 } from 'lucide-react';
+import { Info, Send, Loader2, BarChart2, PieChart, LineChart, Home } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import axios from 'axios';
@@ -35,11 +36,13 @@ interface ChatMessage {
 
 // Define the component
 function GeoEventAnalysis() {
+  const router = useRouter();
   // State for events data
   const [events, setEvents] = useState<EventData[]>([]);
   const [filteredEvents, setFilteredEvents] = useState<EventData[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeChart, setActiveChart] = useState<string | null>(null);
   
   // State for chat
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -57,6 +60,22 @@ function GeoEventAnalysis() {
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // Force minimum content height
+  useEffect(() => {
+    document.body.style.minHeight = '1300px';
+    document.documentElement.style.minHeight = '1300px';
+    document.body.style.overflow = 'auto';
+    document.documentElement.style.overflow = 'auto';
+    
+    return () => {
+      document.body.style.minHeight = '';
+      document.documentElement.style.minHeight = '';
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+    };
+  }, []);
 
   // Fetch events data
   useEffect(() => {
@@ -102,6 +121,9 @@ function GeoEventAnalysis() {
     if (mapRef.current && filteredEvents.length > 0) {
       updateMap();
     }
+    
+    // Generate charts based on the filtered data
+    generateCharts();
   }, [filteredEvents]);
 
   // Scroll to the bottom of chat when messages change
@@ -325,6 +347,178 @@ function GeoEventAnalysis() {
     }
   };
 
+  // Generate dynamic charts based on filtered data
+  const generateCharts = () => {
+    if (filteredEvents.length === 0) {
+      setActiveChart(null);
+      return;
+    }
+    
+    // Set a default chart if none is active
+    if (!activeChart) {
+      setActiveChart('quadclass');
+    }
+  };
+
+  // Generate Chart HTML based on chart type
+  const getChartHTML = () => {
+    if (!activeChart || filteredEvents.length === 0) {
+      return '<div class="flex items-center justify-center h-full"><p class="text-gray-400">Select a chart type or filter the data to view charts</p></div>';
+    }
+    
+    if (activeChart === 'quadclass') {
+      // Count events by quadclass
+      const quadClassCounts = {
+        1: 0, // Verbal Cooperation
+        2: 0, // Material Cooperation
+        3: 0, // Verbal Conflict
+        4: 0  // Material Conflict
+      };
+      
+      filteredEvents.forEach(event => {
+        if (event.quadclass in quadClassCounts) {
+          quadClassCounts[event.quadclass]++;
+        }
+      });
+      
+      // Create pie chart HTML
+      return `
+        <div class="flex flex-col items-center">
+          <h3 class="text-lg font-medium mb-2 text-gray-400">Event Types Distribution</h3>
+          <div class="relative w-64 h-64">
+            <svg viewBox="0 0 100 100" class="w-full h-full">
+              <!-- Pie chart segments -->
+              <circle r="25" cx="50" cy="50" fill="transparent" stroke="#4169E1" stroke-width="50" stroke-dasharray="${calculatePieSegment(quadClassCounts[1], filteredEvents.length)}" stroke-dashoffset="0" transform="rotate(-90 50 50)" />
+              <circle r="25" cx="50" cy="50" fill="transparent" stroke="#00BFFF" stroke-width="50" stroke-dasharray="${calculatePieSegment(quadClassCounts[2], filteredEvents.length)}" stroke-dashoffset="${calculatePieOffset(quadClassCounts[1], filteredEvents.length)}" transform="rotate(-90 50 50)" />
+              <circle r="25" cx="50" cy="50" fill="transparent" stroke="#FFA500" stroke-width="50" stroke-dasharray="${calculatePieSegment(quadClassCounts[3], filteredEvents.length)}" stroke-dashoffset="${calculatePieOffset(quadClassCounts[1] + quadClassCounts[2], filteredEvents.length)}" transform="rotate(-90 50 50)" />
+              <circle r="25" cx="50" cy="50" fill="transparent" stroke="#FF0000" stroke-width="50" stroke-dasharray="${calculatePieSegment(quadClassCounts[4], filteredEvents.length)}" stroke-dashoffset="${calculatePieOffset(quadClassCounts[1] + quadClassCounts[2] + quadClassCounts[3], filteredEvents.length)}" transform="rotate(-90 50 50)" />
+              <circle r="12.5" cx="50" cy="50" fill="#2d3748" />
+            </svg>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mt-4 text-gray-400">
+            <div class="flex items-center">
+              <div class="w-4 h-4 bg-blue-600 mr-2"></div>
+              <span>Verbal Cooperation (${quadClassCounts[1]})</span>
+            </div>
+            <div class="flex items-center">
+              <div class="w-4 h-4 bg-blue-400 mr-2"></div>
+              <span>Material Cooperation (${quadClassCounts[2]})</span>
+            </div>
+            <div class="flex items-center">
+              <div class="w-4 h-4 bg-orange-500 mr-2"></div>
+              <span>Verbal Conflict (${quadClassCounts[3]})</span>
+            </div>
+            <div class="flex items-center">
+              <div class="w-4 h-4 bg-red-500 mr-2"></div>
+              <span>Material Conflict (${quadClassCounts[4]})</span>
+            </div>
+          </div>
+        </div>
+      `;
+    } else if (activeChart === 'country') {
+      // Count events by country
+      const countryCounts = {};
+      filteredEvents.forEach(event => {
+        if (event.countryCode) {
+          if (!countryCounts[event.countryCode]) {
+            countryCounts[event.countryCode] = 0;
+          }
+          countryCounts[event.countryCode]++;
+        }
+      });
+      
+      // Sort countries by count
+      const sortedCountries = Object.entries(countryCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10); // Top 10 countries
+      
+      // Find max value for scaling
+      const maxCount = sortedCountries.length > 0 ? sortedCountries[0][1] : 0;
+      
+      // Create bar chart HTML
+      let bars = '';
+      sortedCountries.forEach(([country, count], index) => {
+        const barWidth = (count / maxCount * 100);
+        bars += `
+          <div class="flex items-center mb-2">
+            <div class="w-10 text-right mr-2 text-gray-400">${country}</div>
+            <div class="flex-1 bg-gray-700 rounded-full h-4">
+              <div class="bg-indigo-500 h-4 rounded-full" style="width: ${barWidth}%"></div>
+            </div>
+            <div class="ml-2 text-gray-400">${count}</div>
+          </div>
+        `;
+      });
+      
+      return `
+        <div class="w-full">
+          <h3 class="text-lg font-medium mb-4 text-gray-400">Top Countries</h3>
+          ${bars || '<p class="text-gray-500">No country data available</p>'}
+        </div>
+      `;
+    } else if (activeChart === 'goldstein') {
+      // Group events by Goldstein score ranges
+      const scoreRanges = {
+        'Very Negative (-10 to -7)': 0,
+        'Negative (-7 to -3)': 0,
+        'Slightly Negative (-3 to 0)': 0,
+        'Slightly Positive (0 to 3)': 0,
+        'Positive (3 to 7)': 0,
+        'Very Positive (7 to 10)': 0
+      };
+      
+      filteredEvents.forEach(event => {
+        const score = event.goldsteinscore;
+        if (score <= -7) scoreRanges['Very Negative (-10 to -7)']++;
+        else if (score <= -3) scoreRanges['Negative (-7 to -3)']++;
+        else if (score < 0) scoreRanges['Slightly Negative (-3 to 0)']++;
+        else if (score < 3) scoreRanges['Slightly Positive (0 to 3)']++;
+        else if (score < 7) scoreRanges['Positive (3 to 7)']++;
+        else scoreRanges['Very Positive (7 to 10)']++;
+      });
+      
+      // Find max value for scaling
+      const maxCount = Math.max(...Object.values(scoreRanges));
+      
+      // Create bar chart HTML
+      let bars = '';
+      Object.entries(scoreRanges).forEach(([range, count], index) => {
+        const barWidth = (count / maxCount * 100);
+        const colors = ['bg-red-600', 'bg-red-400', 'bg-orange-400', 'bg-green-300', 'bg-green-500', 'bg-green-700'];
+        bars += `
+          <div class="flex items-center mb-2">
+            <div class="w-40 text-right mr-2 text-xs text-gray-400">${range}</div>
+            <div class="flex-1 bg-gray-700 rounded-full h-4">
+              <div class="${colors[index]} h-4 rounded-full" style="width: ${barWidth}%"></div>
+            </div>
+            <div class="ml-2 text-gray-400">${count}</div>
+          </div>
+        `;
+      });
+      
+      return `
+        <div class="w-full">
+          <h3 class="text-lg font-medium mb-4 text-gray-400">Goldstein Score Distribution</h3>
+          ${bars || '<p class="text-gray-500">No score data available</p>'}
+        </div>
+      `;
+    }
+    
+    return '<div class="flex items-center justify-center h-full"><p class="text-gray-400">Select a chart type</p></div>';
+  };
+
+  // Helper function to calculate pie chart segment dasharray
+  const calculatePieSegment = (count, total) => {
+    const percentage = count / total;
+    return `${percentage * 157.08} ${157.08 - (percentage * 157.08)}`;
+  };
+
+  // Helper function to calculate pie chart segment dashoffset
+  const calculatePieOffset = (previousCount, total) => {
+    const percentage = previousCount / total;
+    return `${-percentage * 157.08}`;
+  };
+
   // Client-side fallback for natural language processing
   const clientSideQueryProcessing = (query: string) => {
     const normalizedQuery = query.toLowerCase().trim();
@@ -488,6 +682,18 @@ function GeoEventAnalysis() {
         
         setUsingFallback(false);
         
+        // Set appropriate chart based on query
+        if (userQuery.toLowerCase().includes('countr')) {
+          setActiveChart('country');
+        } else if (userQuery.toLowerCase().includes('goldstein') || 
+                  userQuery.toLowerCase().includes('score')) {
+          setActiveChart('goldstein');
+        } else if (userQuery.toLowerCase().includes('type') || 
+                  userQuery.toLowerCase().includes('cooperation') || 
+                  userQuery.toLowerCase().includes('conflict')) {
+          setActiveChart('quadclass');
+        }
+        
       } catch (apiError) {
         console.warn('API request failed, falling back to client-side processing:', apiError);
         
@@ -511,6 +717,18 @@ function GeoEventAnalysis() {
         setFilteredEvents(result.filteredEvents);
         
         setUsingFallback(true);
+        
+        // Set appropriate chart based on query
+        if (userQuery.toLowerCase().includes('countr')) {
+          setActiveChart('country');
+        } else if (userQuery.toLowerCase().includes('goldstein') || 
+                  userQuery.toLowerCase().includes('score')) {
+          setActiveChart('goldstein');
+        } else if (userQuery.toLowerCase().includes('type') || 
+                  userQuery.toLowerCase().includes('cooperation') || 
+                  userQuery.toLowerCase().includes('conflict')) {
+          setActiveChart('quadclass');
+        }
       }
       
     } catch (error) {
@@ -529,7 +747,7 @@ function GeoEventAnalysis() {
         }
       ]);
     } finally {
-      setQueryInProgress(false);
+        setQueryInProgress(false);
     }
   };
 
@@ -568,18 +786,65 @@ function GeoEventAnalysis() {
   };
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6">Geopolitical Event Map</h1>
+    <div className="w-full min-h-screen bg-gray-800 text-gray-400">
+      <header className="w-full bg-gray-900 shadow-sm py-4 px-6 flex justify-between items-center sticky top-0 z-10">
+        <div className="flex items-center">
+          <h1 className="text-2xl font-bold text-white">Geopolitical Event Analysis</h1>
+        </div>
+        
+        <div className="flex items-center space-x-4">
+          {/* Back button */}
+          <Button 
+            variant="outline"
+            onClick={() => router.push('/home')}
+            className="flex items-center gap-2"
+          >
+            <Home className="h-5 w-5" />
+            Back to Dashboard
+          </Button>
+          
+          {/* Chart type selector */}
+          <div className="hidden md:flex space-x-2">
+            <Button 
+              variant={activeChart === 'quadclass' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setActiveChart('quadclass')}
+              className="flex items-center gap-1"
+            >
+              <PieChart className="h-4 w-4" />
+              Event Types
+            </Button>
+            <Button 
+              variant={activeChart === 'country' ? 'default' : 'outline'} 
+              size="sm"
+              onClick={() => setActiveChart('country')}
+              className="flex items-center gap-1"
+            >
+              <BarChart2 className="h-4 w-4" />
+              Countries
+            </Button>
+            <Button 
+              variant={activeChart === 'goldstein' ? 'default' : 'outline'} 
+              size="sm"
+              onClick={() => setActiveChart('goldstein')}
+              className="flex items-center gap-1"
+            >
+              <LineChart className="h-4 w-4" />
+              Goldstein
+            </Button>
+          </div>
+        </div>
+      </header>
       
       {error && (
-        <Alert className="mb-4">
+        <Alert className="m-6">
           <Info className="h-4 w-4" />
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
       
       {usingFallback && (
-        <Alert className="mb-4">
+        <Alert className="mx-6 mt-2">
           <Info className="h-4 w-4" />
           <AlertDescription>
             Using simplified text matching for queries. For full AI-powered search, ensure the ArangoDB and Langchain packages are installed.
@@ -588,16 +853,17 @@ function GeoEventAnalysis() {
       )}
       
       {loading ? (
-        <div className="flex justify-center items-center h-64">
-          <p className="text-lg">Loading event data...</p>
+        <div className="flex justify-center items-center h-64 m-6">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Heatmap */}
-          <div className="lg:col-span-2">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle>Global Events Heatmap</CardTitle>
+        <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Main Map Area - Spans 2 columns */}
+          <div className="md:col-span-2 space-y-6">
+            {/* Map Card with dark background */}
+            <Card className="bg-gray-700 border-0 shadow-md">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-white">Global Events Heatmap</CardTitle>
                 <Button 
                   variant="outline" 
                   size="sm"
@@ -609,7 +875,7 @@ function GeoEventAnalysis() {
               <CardContent>
                 <div 
                   ref={mapContainerRef} 
-                  className="w-full h-[600px] rounded-md border"
+                  className="w-full h-[400px] rounded-md border"
                 ></div>
                 
                 <div className="flex flex-col items-center mt-4">
@@ -619,39 +885,84 @@ function GeoEventAnalysis() {
                     <span className="text-xs">Conflict</span>
                   </div>
                 </div>
-                
-                <div className="mt-4 bg-muted p-3 rounded-md">
-                  <div className="flex justify-between">
-                    <div>
-                      <h4 className="text-sm font-medium">Total Events</h4>
-                      <p className="text-2xl font-bold">{events.length}</p>
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-medium">Filtered Events</h4>
-                      <p className="text-2xl font-bold">{filteredEvents.length}</p>
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-medium">Countries</h4>
-                      <p className="text-2xl font-bold">
-                        {new Set(filteredEvents.map(e => e.countryCode)).size}
-                      </p>
-                    </div>
+              </CardContent>
+            </Card>
+            
+            {/* Dynamic Chart Card */}
+            <Card className="bg-gray-700 border-0 shadow-md pb-10">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-white">
+                  {activeChart === 'quadclass' && 'Event Types Distribution'}
+                  {activeChart === 'country' && 'Events by Country'}
+                  {activeChart === 'goldstein' && 'Goldstein Score Distribution'}
+                  {!activeChart && 'Data Visualization'}
+                </CardTitle>
+                <div className="flex md:hidden space-x-2">
+                  <Button 
+                    variant={activeChart === 'quadclass' ? 'default' : 'outline'}
+                    size="icon"
+                    onClick={() => setActiveChart('quadclass')}
+                  >
+                    <PieChart className="h-4 w-4" />
+                  </Button>
+                  <Button 
+                    variant={activeChart === 'country' ? 'default' : 'outline'} 
+                    size="icon"
+                    onClick={() => setActiveChart('country')}
+                  >
+                    <BarChart2 className="h-4 w-4" />
+                  </Button>
+                  <Button 
+                    variant={activeChart === 'goldstein' ? 'default' : 'outline'} 
+                    size="icon"
+                    onClick={() => setActiveChart('goldstein')}
+                  >
+                    <LineChart className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div 
+                  ref={chartContainerRef}
+                  className="w-full h-[300px] flex items-center justify-center"
+                  dangerouslySetInnerHTML={{ __html: getChartHTML() }}
+                ></div>
+              </CardContent>
+            </Card>
+            
+            {/* Stats Card */}
+            <Card className="bg-gray-700 border-0 shadow-md">
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-400">Total Events</h4>
+                    <p className="text-2xl font-bold text-white">{events.length}</p>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-400">Filtered Events</h4>
+                    <p className="text-2xl font-bold text-white">{filteredEvents.length}</p>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-400">Countries</h4>
+                    <p className="text-2xl font-bold text-white">
+                      {new Set(filteredEvents.map(e => e.countryCode)).size}
+                    </p>
                   </div>
                 </div>
               </CardContent>
             </Card>
           </div>
           
-          {/* Chat Interface */}
-          <div className="lg:col-span-1">
-            <Card className="h-full flex flex-col">
+          {/* Chat Interface - Takes up 1 column */}
+          <div className="md:col-span-1">
+            <Card className="h-full bg-gray-700 border-0 shadow-md">
               <CardHeader>
-                <CardTitle>Ask About Events</CardTitle>
+                <CardTitle className="text-white">Ask About Events</CardTitle>
               </CardHeader>
-              <CardContent className="flex-grow flex flex-col">
+              <CardContent className="flex flex-col h-[calc(100vh-12rem)]">
                 <div 
                   ref={chatContainerRef}
-                  className="flex-grow overflow-y-auto mb-4 space-y-4 max-h-[500px]"
+                  className="flex-grow overflow-y-auto mb-4 space-y-4 max-h-[calc(100vh-16rem)]"
                 >
                   {messages.map((message, index) => (
                     <div 
@@ -661,8 +972,8 @@ function GeoEventAnalysis() {
                       <div 
                         className={`rounded-lg px-4 py-2 max-w-[85%] ${
                           message.role === 'user' 
-                            ? 'bg-primary text-primary-foreground' 
-                            : 'bg-muted'
+                            ? 'bg-blue-600 text-white' 
+                            : 'bg-gray-600 text-gray-100'
                         }`}
                       >
                         {message.isLoading ? (
@@ -671,58 +982,58 @@ function GeoEventAnalysis() {
                             <span>Thinking...</span>
                           </div>
                         ) : (
-                            <div>{message.content}</div>
-                          )}
-                          <div className="text-xs opacity-70 mt-1">
-                            {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </div>
+                          <div>{message.content}</div>
+                        )}
+                        <div className="text-xs opacity-70 mt-1">
+                          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </div>
                       </div>
-                    ))}
-                  </div>
-                  
-                  <form onSubmit={handleSubmit} className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      value={input}
-                      onChange={handleInputChange}
-                      onKeyPress={handleKeyPress}
-                      placeholder="Ask about the events data..."
-                      className="flex-grow rounded-md border border-input px-3 py-2 text-sm ring-offset-background bg-background"
-                      disabled={queryInProgress}
-                    />
-                    <Button 
-                      type="submit" 
-                      size="icon"
-                      disabled={queryInProgress}
-                    >
-                      {queryInProgress ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </form>
-                  
-                  <div className="mt-4 text-xs text-muted-foreground">
-                    <p>Try asking:</p>
-                    <ul className="list-disc list-inside mt-1 space-y-1">
-                      <li>Show events in the United States</li>
-                      <li>Show conflict events</li>
-                      <li>Show cooperation events</li>
-                      <li>Show events with Goldstein scores above 5</li>
-                    </ul>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+                    </div>
+                  ))}
+                </div>
+                
+                <form onSubmit={handleSubmit} className="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={handleInputChange}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Ask about the events data..."
+                    className="flex-grow rounded-lg border border-gray-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-gray-200"
+                    disabled={queryInProgress}
+                  />
+                  <Button 
+                    type="submit" 
+                    size="icon"
+                    disabled={queryInProgress}
+                  >
+                    {queryInProgress ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </Button>
+                </form>
+                
+                <div className="mt-4 text-xs text-gray-400">
+                  <p>Try asking:</p>
+                  <ul className="list-disc list-inside mt-1 space-y-1">
+                    <li>Show events in the United States</li>
+                    <li>Show conflict events</li>
+                    <li>Show cooperation events</li>
+                    <li>Show events with Goldstein scores above 5</li>
+                  </ul>
+                </div>
+              </CardContent>
+            </Card>
           </div>
-        )}
-      </div>
-    );
-  }
-  
-  // Export a page component that renders your app component
-  export default function Page() {
-    return <GeoEventAnalysis />;
-  }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Export a page component that renders your app component
+export default function Page() {
+  return <GeoEventAnalysis />;
+}
