@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
-
 ## Getting Started
 
-First, run the development server:
-
+### Install Dependencies
+Run the following command to install project dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Start the Frontend
+Run the Next.js development server:
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+This will start the frontend at [http://localhost:3000](http://localhost:3000).
 
-This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
+### Run the Backend
+Navigate to the backend script directory:
+```bash
+cd components/ArangoDB/
+```
+Run the backend script:
+```bash
+python runQuery.py
+```
 
-## Learn More
+### (Optional) Enable Realtime Updates to the Map
+To enable real-time updates, run the following scripts in a split terminal:
+```bash
+python components/ArangoDB/Clean_CSV.py
+python components/ArangoDB/WebScraper.py
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Environment Variables
+Create a `.env` file in the root directory and add the following keys:
+```
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+CLERK_SECRET_KEY=
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+ARANGO_HOST=
+ARANGO_DB_NAME=
+ARANGO_USERNAME=
+ARANGO_PASSWORD=
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+WEBHOOK_URL=
 
-## Deploy on Vercel
+NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
+OPENAI_API_KEY=
+```
+Fill in the values with the appropriate credentials and API keys before running the project.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
